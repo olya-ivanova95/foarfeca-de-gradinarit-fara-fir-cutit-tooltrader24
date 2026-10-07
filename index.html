@@ -616,7 +616,7 @@ html,body{max-width:100%;overflow-x:hidden}
             <div class="summary-row total"><span>Total:</span><strong>264,00 lei</strong></div>
           </div>
 
-          <input type="checkbox" name="botcheck" class="hp" tabindex="-1" autocomplete="off">
+          <input type="text" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
           <div class="err" role="alert"></div>
           <button class="btn" type="submit">TRIMITE COMANDA &ndash; 264 LEI</button>
           <div class="cod">
@@ -646,27 +646,39 @@ html,body{max-width:100%;overflow-x:hidden}
   }
   tick();setInterval(tick,1000);
 
-  /* ToolTrader24 checkout: FAN delivery + Web3Forms + Purchase after confirmed success */
-  var PRODUCT_NAME='Foarfecă de grădinărit fără fir 36V 8.0Ah 33mm 2 baterii + cuțit de rezervă cadou';
+  /* ToolTrader24 checkout: FAN proxy + OpenCart order bridge */
+  var ACCESS_KEY='8a8a2d01-02ee-4ef9-ab74-0da465848dd0';
+  var PRODUCT_NAME='Foarfecă de grădinărit fără fir 36V 8.0Ah 33mm, 2 baterii + cuțit de rezervă cadou';
+  var PRODUCT_URL='https://www.tooltrader24.com/foarfeca-de-gradinarit-fara-fir-cutit-de-rezerva-cadou-36v-8-0ah-33mm-2-baterii';
   var PRODUCT_PRICE=239;
   var DELIVERY_FEE=25;
   var FINAL_TOTAL=PRODUCT_PRICE+DELIVERY_FEE;
   var OFFICE_API='https://tooltrader24-fan-proxy.vercel.app/api/offices';
-  var officeCache={};
+  var ORDERS_API='https://tooltrader24-fan-proxy.vercel.app/api/orders';
   var purchased=false;
 
   function escapeHtml(s){return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]})}
   function getItems(j){
     if(Array.isArray(j))return j;
-    return (j && (j.results||j.data||j.offices||j.items)) || [];
+    var c=[j&&j.results,j&&j.data,j&&j.offices,j&&j.items];
+    for(var i=0;i<c.length;i++){
+      if(Array.isArray(c[i]))return c[i];
+      if(c[i]&&typeof c[i]==='object'){
+        if(Array.isArray(c[i].results))return c[i].results;
+        if(Array.isArray(c[i].data))return c[i].data;
+        if(Array.isArray(c[i].offices))return c[i].offices;
+        if(Array.isArray(c[i].items))return c[i].items;
+      }
+    }
+    return [];
   }
   function getNextOffset(j,current,count){
     if(!j || Array.isArray(j))return null;
-    var n=j.next_offset;
-    if(n===undefined)n=j.nextOffset;
-    if(n===undefined && j.pagination)n=j.pagination.next_offset!==undefined?j.pagination.next_offset:j.pagination.nextOffset;
-    if(n===null || n===false || n==='')return null;
-    if(n!==undefined){n=Number(n);return isFinite(n)?n:null}
+    var vals=[j.next_offset,j.nextOffset,j.meta&&j.meta.next_offset,j.pagination&&j.pagination.next_offset,j.data&&!Array.isArray(j.data)&&j.data.next_offset];
+    for(var i=0;i<vals.length;i++){
+      var v=vals[i];
+      if(v!==undefined&&v!==null&&v!==''&&!isNaN(Number(v)))return Number(v);
+    }
     var total=Number(j.total!==undefined?j.total:(j.pagination&&j.pagination.total));
     if(isFinite(total) && current+count<total)return current+count;
     return null;
@@ -684,88 +696,125 @@ html,body{max-width:100%;overflow-x:hidden}
   }
   function officeData(o){
     return {
-      id:o.id||o.office_id||o.officeId||'',
-      code:o.code||o.office_code||o.officeCode||'',
-      name:o.name||o.office_name||o.officeName||officeLabel(o),
-      address:o.address||o.street_address||o.streetAddress||'',
-      city:o.city||o.locality||o.town||'',
-      postcode:o.postcode||o.postal_code||o.postalCode||'',
-      is_machine:o.is_machine!==undefined?o.is_machine:(o.isMachine!==undefined?o.isMachine:'')
+      id:String(o.id||o.office_id||o.officeId||''),
+      code:String(o.code||o.office_code||o.officeCode||''),
+      name:String(o.name||o.office_name||o.officeName||officeLabel(o)||''),
+      address:String(o.address||o.street_address||o.streetAddress||''),
+      city:String(o.city||o.locality||o.town||''),
+      postcode:String(o.postcode||o.postal_code||o.postalCode||''),
+      county:String(o.county||o.region||''),
+      is_machine:Boolean(o.is_machine!==undefined?o.is_machine:o.isMachine)
     };
   }
-  function fetchOfficePage(term,offset){
-    var u=OFFICE_API+'?term='+encodeURIComponent(term)+'&offset='+encodeURIComponent(offset);
-    return fetch(u,{headers:{'Accept':'application/json'}}).then(function(r){if(!r.ok)throw new Error('office');return r.json()});
-  }
-  function fetchAllOffices(term){
-    var key=term.toLowerCase();
-    if(officeCache[key])return Promise.resolve(officeCache[key]);
-    var all=[],seen={},total=null,pages=0;
-    function page(offset){
-      pages++;
-      if(pages>30)return Promise.resolve();
-      return fetchOfficePage(term,offset).then(function(j){
-        var items=getItems(j);
-        if(j && j.total!==undefined)total=Number(j.total);
-        items.forEach(function(o){
-          var d=officeData(o),k=String(d.id||d.code||officeLabel(o))+'|'+d.address;
-          if(!seen[k]){seen[k]=1;all.push(o)}
-        });
-        var next=getNextOffset(j,offset,items.length);
-        if(next!==null && items.length)return page(next);
-      });
-    }
-    return page(0).then(function(){var out={items:all,total:isFinite(total)?total:all.length};officeCache[key]=out;return out});
+  function newRequestId(){
+    if(window.crypto&&typeof window.crypto.randomUUID==='function')return window.crypto.randomUUID();
+    return 'lp-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,12)+'-'+Math.random().toString(36).slice(2,10);
   }
 
   document.querySelectorAll('.checkout-form').forEach(function(f){
-    var box=f.parentNode,err=f.querySelector('.err'),btn=f.querySelector('.btn');
+    var box=f.parentNode,err=f.querySelector('.err'),btn=f.querySelector('.btn'),ok=box.querySelector('.ok'),okText=ok?ok.querySelector('p'):null;
     var choices=f.querySelectorAll('.delivery-choice');
     var officeInput=f.elements.office_search,results=f.querySelector('.office-results'),status=f.querySelector('.search-status'),selectedBox=f.querySelector('.office-selected');
-    var selectedOffice=null,searchTimer=0,requestSeq=0;
+    var selectedOffice=null,searchTimer=0,currentRequestId=null,isSubmitting=false;
+    var state={term:'',next:null,loading:false,seq:0,seen:{},controller:null};
 
     function setMode(mode){
       choices.forEach(function(c){c.classList.toggle('active',c.getAttribute('data-mode')===mode)});
       var address=mode==='address';
       ['city','postcode','street_address'].forEach(function(n){f.elements[n].disabled=!address;if(!address)f.elements[n].value=''});
       officeInput.disabled=address;
-      if(address){selectedOffice=null;officeInput.value='';selectedBox.classList.remove('show');selectedBox.textContent='';results.classList.remove('show');results.innerHTML='';status.textContent='Introduceți cel puțin 2 caractere'}
+      if(address){
+        selectedOffice=null;officeInput.value='';selectedBox.classList.remove('show');selectedBox.textContent='';results.classList.remove('show');results.innerHTML='';status.textContent='Introduceți cel puțin 2 caractere';
+        state.seq++;state.next=null;state.seen={};
+        if(state.controller){try{state.controller.abort()}catch(e){}}
+      }
     }
     f.querySelectorAll('input[name="delivery_mode"]').forEach(function(r){r.addEventListener('change',function(){setMode(r.value)})});
     setMode('office');
 
-    officeInput.addEventListener('input',function(){
-      selectedOffice=null;selectedBox.classList.remove('show');selectedBox.textContent='';
-      clearTimeout(searchTimer);results.classList.remove('show');results.innerHTML='';
-      var term=officeInput.value.trim();
-      if(term.length<2){status.textContent='Introduceți cel puțin 2 caractere';return}
-      var seq=++requestSeq;status.textContent='Se caută în toate punctele FAN...';
-      searchTimer=setTimeout(function(){
-        fetchAllOffices(term).then(function(out){
-          if(seq!==requestSeq)return;
-          var items=out.items;
-          status.textContent=items.length+(items.length===1?' BIROU / LOCKER GĂSIT':' BIROURI ȘI LOCKERE GĂSITE');
-          if(!items.length){results.innerHTML='<div class="office-result">Nu a fost găsit niciun punct FAN pentru această căutare.</div>';results.classList.add('show');return}
-          results.innerHTML=items.map(function(o,i){return '<button type="button" class="office-result" data-i="'+i+'" role="option">'+escapeHtml(officeLabel(o))+'<small>'+escapeHtml(officeMeta(o))+'</small></button>'}).join('');
-          results.classList.add('show');
-          results.querySelectorAll('button[data-i]').forEach(function(b){b.addEventListener('click',function(){
-            var o=items[Number(b.getAttribute('data-i'))];selectedOffice=officeData(o);
-            officeInput.value=officeLabel(o);results.classList.remove('show');
-            selectedBox.innerHTML='<strong>Punct selectat:</strong> '+escapeHtml(officeLabel(o))+(officeMeta(o)?'<br>'+escapeHtml(officeMeta(o)):'');selectedBox.classList.add('show');
-            status.textContent='Punct FAN selectat';
-          })});
-        }).catch(function(){
-          if(seq!==requestSeq)return;
-          status.textContent='Lista FAN nu a putut fi încărcată. Reîncearcă sau alege livrare la adresă.';
+    function appendRows(items){
+      var added=0;
+      items.forEach(function(o){
+        var d=officeData(o),key=String(d.id||d.code||officeLabel(o))+'|'+d.address;
+        if(state.seen[key])return;
+        state.seen[key]=1;added++;
+        var b=document.createElement('button');b.type='button';b.className='office-result';b.setAttribute('role','option');
+        b.innerHTML='<strong>'+escapeHtml(officeLabel(o))+'</strong><small>'+escapeHtml(officeMeta(o))+'</small>';
+        b.addEventListener('click',function(ev){
+          ev.preventDefault();ev.stopPropagation();selectedOffice=d;officeInput.value=officeLabel(o);results.classList.remove('show');
+          selectedBox.innerHTML='<strong>Punct selectat:</strong> '+escapeHtml(officeLabel(o))+(officeMeta(o)?'<br>'+escapeHtml(officeMeta(o)):'');selectedBox.classList.add('show');status.textContent='Punct FAN selectat';
         });
-      },300);
+        results.appendChild(b);
+      });
+      return added;
+    }
+    function addMore(seq){
+      var old=results.querySelector('[data-load-more]');if(old)old.remove();
+      if(state.next===null||state.next===undefined)return;
+      var b=document.createElement('button');b.type='button';b.className='office-result';b.setAttribute('data-load-more','1');
+      b.innerHTML='<strong>Încarcă mai multe puncte FAN</strong><small>Continuă lista de rezultate</small>';
+      b.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();loadPage(state.term,state.next,true,seq)});
+      results.appendChild(b);
+    }
+    function loadPage(term,offset,append,seq){
+      if(state.loading)return Promise.resolve();
+      state.loading=true;
+      if(!append){results.innerHTML='';state.seen={}}
+      var old=results.querySelector('[data-load-more]');if(old)old.remove();
+      status.textContent=append?'Se încarcă mai multe puncte FAN...':'Se caută în lista FAN Courier...';
+      if(state.controller){try{state.controller.abort()}catch(e){}}
+      state.controller=typeof AbortController!=='undefined'?new AbortController():null;
+      var opts={headers:{'Accept':'application/json'}};if(state.controller)opts.signal=state.controller.signal;
+      var u=OFFICE_API+'?term='+encodeURIComponent(term)+'&offset='+encodeURIComponent(offset||0);
+      return fetch(u,opts).then(function(r){if(!r.ok)throw new Error('office');return r.json()}).then(function(j){
+        if(seq!==state.seq)return;
+        if(j&&j.success===false)throw new Error(j.error||'office');
+        var items=getItems(j),added=appendRows(items);state.next=getNextOffset(j,offset||0,items.length);
+        if(!append&&!added){status.textContent='Nu a fost găsit niciun punct FAN pentru această căutare.';results.classList.remove('show');return}
+        results.classList.add('show');status.textContent=Object.keys(state.seen).length+' puncte încărcate. Selectează unul.';addMore(seq);
+      }).catch(function(e){
+        if(e&&e.name==='AbortError')return;if(seq!==state.seq)return;
+        if(!append){results.classList.remove('show');results.innerHTML=''}
+        status.textContent='Lista FAN nu a putut fi încărcată. Reîncearcă sau alege livrare la adresă.';
+      }).then(function(){if(seq===state.seq)state.loading=false});
+    }
+
+    officeInput.addEventListener('input',function(){
+      selectedOffice=null;selectedBox.classList.remove('show');selectedBox.textContent='';clearTimeout(searchTimer);results.classList.remove('show');results.innerHTML='';
+      var term=officeInput.value.trim();state.seq++;var seq=state.seq;state.term=term;state.next=null;state.seen={};state.loading=false;
+      if(state.controller){try{state.controller.abort()}catch(e){}}
+      if(term.length<2){status.textContent='Introduceți cel puțin 2 caractere';return}
+      searchTimer=setTimeout(function(){loadPage(term,0,false,seq)},250);
     });
     officeInput.addEventListener('focus',function(){if(results.innerHTML)results.classList.add('show')});
+    results.addEventListener('scroll',function(){
+      if(state.next!==null&&!state.loading&&results.scrollTop+results.clientHeight>=results.scrollHeight-36)loadPage(state.term,state.next,true,state.seq);
+    });
     document.addEventListener('click',function(e){if(!f.contains(e.target))results.classList.remove('show')});
 
+    function sendBackup(orderRes,first,last,email,phone,mode,city,postcode,street){
+      if(!ACCESS_KEY)return;
+      var backup={
+        access_key:ACCESS_KEY,
+        subject:'Comandă OpenCart #'+orderRes.order_id+': Foarfecă de grădinărit 36V',
+        from_name:'ToolTrader24 Landing Backup',
+        'OpenCart order_id':String(orderRes.order_id),
+        'Prenume':first,'Nume':last,'E-Mail':email,'Telefon':phone,
+        'Metoda de plata (plata la primire)':'Plata la livrare',
+        'Metoda de livrare':mode==='office'?'FAN Courier - livrare la oficiu / locker':'FAN Courier - livrare la adresă',
+        'Adăugați explicații la comandă (dacă este necesar)':f.elements.comments.value.trim(),
+        produs:PRODUCT_NAME,'Product URL':PRODUCT_URL,cantitate:'1',
+        'OpenCart total':String(orderRes.total)+' '+String(orderRes.currency||'RON'),
+        pagina:location.href
+      };
+      if(mode==='office'&&selectedOffice){
+        backup['Birou / locker FAN']=officeInput.value;backup.office_id=selectedOffice.id;backup.office_code=selectedOffice.code;backup.office_name=selectedOffice.name;backup.office_address=selectedOffice.address;backup.office_city=selectedOffice.city;backup.office_postcode=selectedOffice.postcode;backup.office_is_machine=String(selectedOffice.is_machine);
+      }else{backup['Oraș']=city;backup['Cod Poștal']=postcode;backup['Adresă - stradă și număr']=street}
+      fetch('https://api.web3forms.com/submit',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify(backup)}).catch(function(){});
+    }
+
     f.addEventListener('submit',function(ev){
-      ev.preventDefault();err.textContent='';
-      if(f.botcheck.checked)return;
+      ev.preventDefault();if(isSubmitting)return;err.textContent='';
       var first=f.elements.first_name.value.trim(),last=f.elements.last_name.value.trim(),email=f.elements.email.value.trim(),raw=f.elements.phone.value.trim();
       var digits=raw.replace(/\D/g,''),mode=f.querySelector('input[name="delivery_mode"]:checked').value;
       if(first.length<2){err.textContent='Completează câmpul Prenume.';f.elements.first_name.focus();return}
@@ -780,48 +829,40 @@ html,body{max-width:100%;overflow-x:hidden}
         if(street.length<2){err.textContent='Completează câmpul Adresă - stradă și număr.';f.elements.street_address.focus();return}
       }
       if(!f.elements.terms.checked){err.textContent='Bifează acordul cu TERMENI SI CONDITII DE UTILIZARE.';f.elements.terms.focus();return}
+      if(!currentRequestId)currentRequestId=newRequestId();
 
-      btn.disabled=true;var label=btn.innerHTML;btn.textContent='Se trimite...';
-      var payload={
-        access_key:'8a8a2d01-02ee-4ef9-ab74-0da465848dd0',
-        subject:'Comandă nouă: Foarfecă de grădinărit 36V (landing)',
-        from_name:'ToolTrader24 Landing',
-        'Prenume':first,
-        'Nume':last,
-        'E-Mail':email,
-        'Telefon':raw,
-        'Metoda de plata (plata la primire)':'Plata la livrare',
-        'Metoda de livrare':mode==='office'?'FAN Courier - livrare la oficiu / locker':'FAN Courier - livrare la adresă',
-        'Adăugați explicații la comandă (dacă este necesar)':f.elements.comments.value.trim(),
-        produs:PRODUCT_NAME,
-        cantitate:'1',
-        'Preț unitar':'239,00 lei',
-        Subtotal:'239,00 lei',
-        'Valoarea taxei fixe de livrare':'25,00 lei',
-        Total:'264,00 lei',
-        currency:'RON',
-        terms_accepted:'DA',
-        formular:f.getAttribute('data-pos'),
-        pagina:location.href
+      var orderPayload={
+        request_id:currentRequestId,
+        product_url:PRODUCT_URL,
+        quantity:1,
+        firstname:first,lastname:last,email:email,telephone:raw,
+        delivery_mode:mode,
+        office:mode==='office'?selectedOffice:{},
+        address:mode==='address'?{address_1:street,city:city,postcode:postcode,county:''}:{},
+        comment:f.elements.comments.value.trim(),
+        source_url:location.href,
+        terms_accepted:true,
+        website:f.elements.website.value.trim()
       };
-      if(mode==='office'){
-        payload['Birou / locker FAN']=officeInput.value;
-        payload.office_id=selectedOffice.id;payload.office_code=selectedOffice.code;payload.office_name=selectedOffice.name;
-        payload.office_address=selectedOffice.address;payload.office_city=selectedOffice.city;payload.office_postcode=selectedOffice.postcode;payload.office_is_machine=String(selectedOffice.is_machine);
-      }else{
-        payload['Oraș']=city;payload['Cod Poștal']=postcode;payload['Adresă - stradă și număr']=street;
-      }
 
-      fetch('https://api.web3forms.com/submit',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify(payload)})
-      .then(function(r){return r.json()}).then(function(j){
-        if(j && j.success){
-          box.classList.add('done');
-          if(!purchased){purchased=true;try{fbq('track','Purchase',{value:FINAL_TOTAL,currency:'RON',content_name:'Foarfeca de gradinarit 36V',content_type:'product',num_items:1})}catch(e){}}
-        }else{throw new Error()}
-      }).catch(function(){err.textContent='Comanda nu a fost trimisă. Verifică datele și încearcă din nou.';btn.disabled=false;btn.innerHTML=label});
+      isSubmitting=true;btn.disabled=true;var label=btn.innerHTML;btn.textContent='Se trimite...';var responseStatus=0;
+      fetch(ORDERS_API,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify(orderPayload)})
+      .then(function(r){responseStatus=r.status;return r.json().catch(function(){return null})})
+      .then(function(res){
+        if(!res||res.success!==true||!res.order_id){if(responseStatus>0&&responseStatus<500&&responseStatus!==429)currentRequestId=null;throw new Error(res&&res.error?String(res.error):'order')}
+        var total=Number(res.total),currency=String(res.currency||'').trim();
+        if(!purchased&&window.fbq&&isFinite(total)&&total>=0&&currency){
+          try{fbq('track','Purchase',{value:total,currency:currency,content_name:PRODUCT_NAME,content_type:'product',num_items:1});purchased=true}catch(e){}
+        }
+        box.classList.add('done');
+        if(okText)okText.textContent='Mulțumim. Comanda #'+String(res.order_id)+' a fost înregistrată. Plata se face la livrare.';
+        sendBackup(res,first,last,email,raw,mode,city,postcode,street);
+        currentRequestId=null;isSubmitting=false;
+      }).catch(function(){
+        err.textContent='Comanda nu a fost trimisă. Verifică datele și încearcă din nou.';btn.disabled=false;btn.innerHTML=label;isSubmitting=false;
+      });
     });
   });
-
 })();
 </script>
 </body>
